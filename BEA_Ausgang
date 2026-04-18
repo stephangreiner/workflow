@@ -1,0 +1,324 @@
+SET oberordner TO $'''C:\\Users\\steph\\OneDrive - Kanzlei Greiner\\bea_aus'''
+SET Backslash TO $'''\\'''
+SET ErgebnisOrdner TO $'''C:\\Users\\steph\\OneDrive - Kanzlei Greiner\\bea_aus\\auspdfs'''
+SET Archiv_Ordner TO $'''C:\\Users\\steph\\OneDrive - Kanzlei Greiner\\bea_aus\\auszipsversendet'''
+SET LogDatei TO $'''C:\\Users\\steph\\OneDrive - Kanzlei Greiner\\bea_aus\\log.txt'''
+LOOP WHILE (1) = (1)
+    Folder.GetFiles Folder: oberordner FileFilter: $'''*.zip''' IncludeSubfolders: False FailOnAccessDenied: True SortBy1: Folder.SortBy.NoSort SortDescending1: False Files=> Files
+    LOOP FOREACH CurrentZip IN Files
+        Folder.Create FolderPath: oberordner FolderName: $'''auspdfs''' Folder=> TempFolder
+        Folder.Create FolderPath: oberordner FolderName: $'''auszipsversendet''' Folder=> TempFolder
+        DateTime.GetCurrentDateTime.Local DateTimeFormat: DateTime.DateTimeFormat.DateAndTime CurrentDateTime=> CurrentDateTime
+        Text.ConvertDateTimeToText.FromCustomDateTime DateTime: CurrentDateTime CustomFormat: $'''yyyy-MM-dd-HH-mm''' Result=> FormattedDateTime
+        SET xml_empfaenger TO $'''unbekannt'''
+        SET xml_empfaenger_raw TO $''''''
+        SET xml_empfaenger_code TO $'''unbekannt'''
+        SET xml_az_absender TO $'''unbekannt'''
+        SET xml_az_absender_ersetzt TO $'''unbekannt'''
+        SET xml_az_empfaenger TO $'''unbekannt'''
+        SET xml_az_empfaenger_ersetzt TO $'''keinGerichtsAZ'''
+        SET xmlkurzrubrum_bereinigt TO $'''Ohne_Betreff'''
+        SET Xmlwert_kurzrubrum TO $''''''
+        SET xml_erstellungszeit_format TO $'''0000-00-00'''
+        SET xml_gericht_kuerzel TO $'''GER'''
+        SET anschrift_z1 TO $''''''
+        SET anschrift_z2 TO $''''''
+        SET anschrift_z3 TO $''''''
+        SET anschrift_z4 TO $''''''
+        SET xml_verfahrensgegenstand TO $''''''
+        SET verfahrensgegenstand_bereinigt TO $'''Ohne_Betreff'''
+        SET xml_sachgebiet TO $'''unbekannt'''
+        SET ZipArchiviert TO False
+        SET HatFehler TO False
+        SET IstGericht TO False
+        SET VerifTest TO $''''''
+        SET AuthTest TO $''''''
+        SET LogEintrag TO $'''%FormattedDateTime% | START | %CurrentZip%'''
+        File.WriteText File: LogDatei TextToWrite: LogEintrag AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        ON ERROR
+            SET HatFehler TO True
+            GOTO SkipToNext
+        END
+        Folder.Create FolderPath: ErgebnisOrdner FolderName: FormattedDateTime Folder=> TargetFolder
+        Compression.UnzipFiles ArchivePath: CurrentZip DestinationFolder: TargetFolder
+        Folder.GetFiles Folder: TargetFolder FileFilter: $'''*.zip''' IncludeSubfolders: False Files=> InnerZips
+        LOOP FOREACH innerZip IN InnerZips
+            SET InnerSuffixCounter TO 0
+            SET InnerZipFinal TO innerZip.NameWithoutExtension
+            LOOP WHILE (1) = (1)
+                Folder.GetFiles Folder: oberordner FileFilter: $'''%InnerZipFinal%.zip''' IncludeSubfolders: False FailOnAccessDenied: True SortBy1: Folder.SortBy.NoSort SortDescending1: False Files=> ExistingCheckOben
+                Folder.GetFiles Folder: Archiv_Ordner FileFilter: $'''*%innerZip.NameWithoutExtension%*.zip''' IncludeSubfolders: False FailOnAccessDenied: True SortBy1: Folder.SortBy.NoSort SortDescending1: False Files=> ExistingCheckArchiv
+                IF (ExistingCheckOben.Count = 0) AND (ExistingCheckArchiv.Count = 0) THEN
+                    EXIT LOOP
+                END
+                IF (ExistingCheckArchiv.Count > 0) THEN
+                    SET InnerZipFinal TO $'''%innerZip.NameWithoutExtension%_schon_verarbeitet'''
+                    Folder.GetFiles Folder: oberordner FileFilter: $'''%InnerZipFinal%.zip''' IncludeSubfolders: False FailOnAccessDenied: True SortBy1: Folder.SortBy.NoSort SortDescending1: False Files=> ExistingCheckSchon
+                    IF (ExistingCheckSchon.Count = 0) THEN
+                        EXIT LOOP
+                    END
+                    SET InnerSuffixCounter TO InnerSuffixCounter + 1
+                    SET InnerZipFinal TO $'''%innerZip.NameWithoutExtension%_schon_verarbeitet_%InnerSuffixCounter%'''
+                ELSE
+                    SET InnerSuffixCounter TO InnerSuffixCounter + 1
+                    SET InnerZipFinal TO $'''%innerZip.NameWithoutExtension%_%InnerSuffixCounter%'''
+                END
+            END
+            IF (InnerZipFinal = innerZip.NameWithoutExtension) THEN
+                File.Move Files: innerZip Destination: oberordner IfFileExists: File.IfExists.DoNothing MovedFiles=> MovedInnerZip
+            ELSE
+                File.RenameFiles.Rename Files: innerZip NewName: InnerZipFinal KeepExtension: True IfFileExists: File.IfExists.Overwrite RenamedFiles=> RenamedInnerZip
+                File.Move Files: RenamedInnerZip[0] Destination: oberordner IfFileExists: File.IfExists.DoNothing MovedFiles=> MovedInnerZip
+            END
+        END
+        Folder.GetFiles Folder: TargetFolder FileFilter: $'''xjustiz_nachricht.xml''' IncludeSubfolders: False Files=> XmlFiles
+        IF (XmlFiles.Count) > (0) THEN
+            XML.ReadFromFile File: XmlFiles[0] Encoding: XML.FileEncoding.DefaultEncoding XmlDocument=> XmlContent
+            ON ERROR
+                SET verfahrensgegenstand_bereinigt TO $'''Ohne_Betreff'''
+                SET xml_az_absender TO $'''unbekannt'''
+                SET xml_az_empfaenger TO $'''unbekannt'''
+                GOTO XmlDone
+            END
+            XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''//*[local-name()=\'kurzrubrum\']''' TextValue=> Xmlwert_kurzrubrum
+            ON ERROR
+                SET Xmlwert_kurzrubrum TO $''''''
+            END
+            IF (Xmlwert_kurzrubrum <> $'''''') THEN
+                Text.Replace.ReplaceTextWithRegex Text: Xmlwert_kurzrubrum TextToFind: $'''[^a-zA-Z0-9]''' IgnoreCase: False ReplaceWith: $'''''' ActivateEscapeSequences: False Result=> xmlkurzrubrum_bereinigt
+                IF (xmlkurzrubrum_bereinigt = $'''''') THEN
+                    SET xmlkurzrubrum_bereinigt TO $'''Ohne_Betreff'''
+                END
+            END
+            XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''//*[local-name()=\'erstellungszeitpunkt\']''' TextValue=> xml_erstellungszeit_roh
+            ON ERROR
+                SET xml_erstellungszeit_roh TO $''''''
+            END
+            IF (xml_erstellungszeit_roh <> $'''''') THEN
+                Text.Replace.ReplaceTextWithRegex Text: xml_erstellungszeit_roh TextToFind: $'''T.*''' IgnoreCase: False ReplaceWith: $'''''' ActivateEscapeSequences: False Result=> xml_erstellungszeit_format
+            END
+            XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''//*[local-name()=\'aktenzeichen.absender\']''' TextValue=> xml_az_absender
+            ON ERROR
+                SET xml_az_absender TO $'''unbekannt'''
+            END
+            XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''//*[local-name()=\'aktenzeichen.empfaenger\']''' TextValue=> xml_az_empfaenger
+            ON ERROR
+                SET xml_az_empfaenger TO $''''''
+            END
+            IF (xml_az_empfaenger = $'''''') THEN
+                SET xml_az_empfaenger_ersetzt TO $'''keinGerichtsAZ'''
+            ELSE
+                Text.Replace.ReplaceTextWithRegex Text: xml_az_empfaenger TextToFind: $'''^unbekannt.*''' IgnoreCase: True ReplaceWith: $'''keinGerichtsAZ''' ActivateEscapeSequences: False Result=> xml_az_empfaenger_ersetzt
+                IF (xml_az_empfaenger_ersetzt <> $'''keinGerichtsAZ''') THEN
+                    Text.Replace.ReplaceTextWithRegex Text: xml_az_empfaenger TextToFind: $'''[^a-zA-Z0-9]''' IgnoreCase: False ReplaceWith: $'''-''' ActivateEscapeSequences: False Result=> xml_az_empfaenger_ersetzt
+                END
+            END
+            Text.Replace.ReplaceTextWithRegex Text: xml_az_absender TextToFind: $'''[^a-zA-Z0-9]''' IgnoreCase: False ReplaceWith: $'''-''' ActivateEscapeSequences: False Result=> xml_az_absender_ersetzt
+            XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''//*[local-name()=\'empfaenger.sonstige\']''' TextValue=> xml_empfaenger_raw
+            ON ERROR
+                SET xml_empfaenger_raw TO $''''''
+            END
+            IF (xml_empfaenger_raw = $'''''') THEN
+                SET IstGericht TO True
+                XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''//*[local-name()=\'empfaenger.gericht\']/*[local-name()=\'code\']''' TextValue=> xml_empfaenger_code
+                ON ERROR
+                    SET xml_empfaenger_code TO $'''unbekannt'''
+                END
+                SWITCH xml_empfaenger_code
+                    CASE = $'''B1503'''
+                        SET xml_empfaenger TO $'''AG_Konstanz_Familiengericht'''
+                        SET xml_gericht_kuerzel TO $'''AGK'''
+                        SET anschrift_z1 TO $'''Amtsgericht Konstanz'''
+                        SET anschrift_z2 TO $'''- Familiengericht -'''
+                        SET anschrift_z3 TO $'''Gerichtsgasse 9'''
+                        SET anschrift_z4 TO $'''78462 Konstanz'''
+                    CASE = $'''B9027'''
+                        SET xml_empfaenger TO $'''ArbG_VS_Kammern_Radolfzell'''
+                        SET xml_gericht_kuerzel TO $'''ArbRa'''
+                        SET anschrift_z1 TO $'''Arbeitsgericht Villingen-Schwenningen'''
+                        SET anschrift_z2 TO $'''- Kammern Radolfzell -'''
+                        SET anschrift_z3 TO $'''Seetorstraße 5'''
+                        SET anschrift_z4 TO $'''78315 Radolfzell'''
+                    CASE = $'''B2408'''
+                        SET xml_empfaenger TO $'''AG_Freiburg_Familiengericht'''
+                        SET xml_gericht_kuerzel TO $'''AGF'''
+                        SET anschrift_z1 TO $'''Amtsgericht Freiburg i.Br.'''
+                        SET anschrift_z2 TO $'''- Familiengericht -'''
+                        SET anschrift_z3 TO $'''Holzmarkt 2'''
+                        SET anschrift_z4 TO $'''79098 Freiburg im Breisgau'''
+                    DEFAULT
+                        SET xml_empfaenger TO $'''Gericht_%xml_empfaenger_code%'''
+                        SET xml_gericht_kuerzel TO $'''GER_%xml_empfaenger_code%'''
+                END
+            ELSE
+                Text.Replace.ReplaceTextWithRegex Text: xml_empfaenger_raw TextToFind: $'''\\s*\\(.*''' IgnoreCase: False ReplaceWith: $'''''' ActivateEscapeSequences: False Result=> xml_empfaenger
+            END
+            XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''//*[local-name()=\'gegenstand\']''' TextValue=> xml_verfahrensgegenstand
+            ON ERROR
+                SET xml_verfahrensgegenstand TO $''''''
+            END
+            IF (xml_verfahrensgegenstand <> $'''''') THEN
+                Text.Replace.ReplaceTextWithRegex Text: xml_verfahrensgegenstand TextToFind: $'''[^a-zA-Z0-9]''' IgnoreCase: False ReplaceWith: $'''''' ActivateEscapeSequences: False Result=> verfahrensgegenstand_bereinigt
+                IF (verfahrensgegenstand_bereinigt = $'''''') THEN
+                    SET verfahrensgegenstand_bereinigt TO $'''Ohne_Betreff'''
+                END
+            ELSE IF (xmlkurzrubrum_bereinigt <> $'''Ohne_Betreff''') THEN
+                SET verfahrensgegenstand_bereinigt TO xmlkurzrubrum_bereinigt
+            END
+            XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''//*[local-name()=\'sachgebiet\']/*[local-name()=\'code\']''' TextValue=> xml_sachgebiet
+            ON ERROR
+                SET xml_sachgebiet TO $'''unbekannt'''
+            END
+            LABEL XmlDone
+        END
+        IF (IstGericht = True) THEN
+            SET ZielOrdnerName TO $'''%xml_erstellungszeit_format%_%verfahrensgegenstand_bereinigt%_%xml_az_absender_ersetzt%_%xml_az_empfaenger_ersetzt%'''
+        ELSE
+            SET ZielOrdnerName TO $'''%xml_erstellungszeit_format%_%verfahrensgegenstand_bereinigt%_%xml_az_absender_ersetzt%'''
+        END
+        SET SuffixCounter TO 0
+        SET ZielOrdnerFinal TO ZielOrdnerName
+        LOOP WHILE (1) = (1)
+            Folder.GetSubfolders Folder: ErgebnisOrdner IncludeSubfolders: False Subfolders=> AlleFolders
+            SET NameExistiert TO False
+            LOOP FOREACH PrüfOrdner IN AlleFolders
+                IF (PrüfOrdner.Name = ZielOrdnerFinal) THEN
+                    SET NameExistiert TO True
+                END
+            END
+            IF (NameExistiert = False) THEN
+                EXIT LOOP
+            END
+            SET SuffixCounter TO SuffixCounter + 1
+            SET ZielOrdnerFinal TO $'''%ZielOrdnerName% (%SuffixCounter%)'''
+        END
+        Folder.Rename Folder: TargetFolder NewName: ZielOrdnerFinal RenamedFolder=> zielorder_renamed
+        Folder.GetFiles Folder: zielorder_renamed.FullName FileFilter: $'''*.pdf''' IncludeSubfolders: False FailOnAccessDenied: True SortBy1: Folder.SortBy.NoSort SortDescending1: False Files=> PdfFiles
+        LOOP FOREACH pdfFile IN PdfFiles
+            SET LoeschePdf TO False
+            SET VerifTest TO $''''''
+            SET AuthTest TO $''''''
+            Text.Replace.ReplaceTextWithRegex Text: pdfFile.Name TextToFind: $'''^\\d+_VerificationReport\\.pdf$''' IgnoreCase: True ReplaceWith: $'''VERIF_MATCH''' ActivateEscapeSequences: False Result=> VerifTest
+            Text.Replace.ReplaceTextWithRegex Text: pdfFile.Name TextToFind: $'''^Authentizit(ae|ä)ts(nachweis|_und_Integrit).*\\.pdf$''' IgnoreCase: True ReplaceWith: $'''AUTH_MATCH''' ActivateEscapeSequences: False Result=> AuthTest
+            IF (VerifTest = $'''VERIF_MATCH''') OR (AuthTest = $'''AUTH_MATCH''') THEN
+                File.Delete Files: pdfFile
+                SET LoeschePdf TO True
+            END
+            IF (LoeschePdf = False) THEN
+                Text.Replace.ReplaceTextWithRegex Text: pdfFile.NameWithoutExtension TextToFind: $'''_[0-9a-f]{32}$''' IgnoreCase: False ReplaceWith: $'''''' ActivateEscapeSequences: False Result=> pdf_name_enthashed
+                SET PdfSuffixCounter TO 0
+                SET PdfNameFinal TO $'''Aus_%xml_erstellungszeit_format%_%pdf_name_enthashed%'''
+                LOOP WHILE (1) = (1)
+                    Folder.GetFiles Folder: zielorder_renamed.FullName FileFilter: $'''%PdfNameFinal%.pdf''' IncludeSubfolders: False Files=> ExistingPdf
+                    IF (ExistingPdf.Count) = (0) THEN
+                        EXIT LOOP
+                    END
+                    SET PdfSuffixCounter TO PdfSuffixCounter + 1
+                    SET PdfNameFinal TO $'''Aus_%xml_erstellungszeit_format%_%pdf_name_enthashed% (%PdfSuffixCounter%)'''
+                END
+                File.RenameFiles.Rename Files: pdfFile NewName: PdfNameFinal KeepExtension: True IfFileExists: File.IfExists.DoNothing RenamedFiles=> RenamedPdf
+            END
+        END
+        IF (IstGericht = True) THEN
+            SET TxtDateiname TO $'''%xml_gericht_kuerzel%_%xml_az_empfaenger_ersetzt%'''
+        ELSE
+            Text.Replace.ReplaceTextWithRegex Text: xml_empfaenger TextToFind: $'''[^a-zA-Z0-9äöüÄÖÜß]''' IgnoreCase: False ReplaceWith: $'''-''' ActivateEscapeSequences: False Result=> TxtDateiname
+            IF (TxtDateiname = $'''''') THEN
+                SET TxtDateiname TO $'''Empfaenger_unbekannt'''
+            END
+        END
+        SET TxtPfad TO $'''%zielorder_renamed.FullName%%Backslash%%TxtDateiname%.txt'''
+        File.WriteText File: TxtPfad TextToWrite: $'''Eigenes AZ (Absender)  : %xml_az_absender%''' AppendNewLine: True IfFileExists: File.IfFileExists.Overwrite Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''AZ Empfaenger          : %xml_az_empfaenger%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''=== Empfaenger ===''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''Empfaenger             : %xml_empfaenger%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        IF (IstGericht = True) THEN
+            File.WriteText File: TxtPfad TextToWrite: $'''Empfaenger-Code        : %xml_empfaenger_code%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        ELSE
+            File.WriteText File: TxtPfad TextToWrite: $'''Empfaenger-Raw         : %xml_empfaenger_raw%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        END
+        IF (anschrift_z1 <> $'''''') THEN
+            File.WriteText File: TxtPfad TextToWrite: $'''Postanschrift:''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+            File.WriteText File: TxtPfad TextToWrite: anschrift_z1 AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+            IF (anschrift_z2 <> $'''''') THEN
+                File.WriteText File: TxtPfad TextToWrite: anschrift_z2 AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+            END
+            IF (anschrift_z3 <> $'''''') THEN
+                File.WriteText File: TxtPfad TextToWrite: anschrift_z3 AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+            END
+            IF (anschrift_z4 <> $'''''') THEN
+                File.WriteText File: TxtPfad TextToWrite: anschrift_z4 AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+            END
+        END
+        File.WriteText File: TxtPfad TextToWrite: $'''''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''=== XML-Daten aus xjustiz_nachricht.xml ===''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''Erstellungsdatum       : %xml_erstellungszeit_format%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''Kurzrubrum (roh)       : %Xmlwert_kurzrubrum%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''Kurzrubrum (bereinigt) : %xmlkurzrubrum_bereinigt%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''Verfahrensgegenstand   : %xml_verfahrensgegenstand%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''Sachgebiet-Code        : %xml_sachgebiet%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        File.WriteText File: TxtPfad TextToWrite: $'''=== Dokumente ===''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        IF (XmlFiles.Count) > (0) THEN
+            SET DokIndex TO 1
+            LOOP WHILE (DokIndex) <= (50)
+                SET DokKlasse TO $''''''
+                SET DokTyp TO $''''''
+                SET DokDateiname TO $''''''
+                SET DokAnzeige TO $''''''
+                XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''(//*[local-name()=\'dokument\'])[%DokIndex%]/*[local-name()=\'xjustiz.fachspezifischeDaten\']/*[local-name()=\'dokumentklasse\']/*[local-name()=\'code\']''' TextValue=> DokKlasse
+                ON ERROR
+                    SET DokKlasse TO $''''''
+                END
+                XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''(//*[local-name()=\'dokument\'])[%DokIndex%]/*[local-name()=\'xjustiz.fachspezifischeDaten\']/*[local-name()=\'dokumententyp\']/*[local-name()=\'code\']''' TextValue=> DokTyp
+                ON ERROR
+                    SET DokTyp TO $''''''
+                END
+                XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''(//*[local-name()=\'dokument\'])[%DokIndex%]/*[local-name()=\'xjustiz.fachspezifischeDaten\']/*[local-name()=\'datei\']/*[local-name()=\'dateiname\']''' TextValue=> DokDateiname
+                ON ERROR
+                    SET DokDateiname TO $''''''
+                END
+                XML.GetXmlElementValue.GetElementValue Document: XmlContent XPathQuery: $'''(//*[local-name()=\'dokument\'])[%DokIndex%]/*[local-name()=\'xjustiz.fachspezifischeDaten\']/*[local-name()=\'anzeigename\']''' TextValue=> DokAnzeige
+                ON ERROR
+                    SET DokAnzeige TO $''''''
+                END
+                IF (DokKlasse = $'''''') AND (DokDateiname = $'''''') AND (DokAnzeige = $'''''') THEN
+                    EXIT LOOP
+                END
+                File.WriteText File: TxtPfad TextToWrite: $'''-- Dokument %DokIndex% --''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+                File.WriteText File: TxtPfad TextToWrite: $'''  Anzeigename    : %DokAnzeige%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+                File.WriteText File: TxtPfad TextToWrite: $'''  Dokumentklasse : %DokKlasse%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+                File.WriteText File: TxtPfad TextToWrite: $'''  Dokumententyp  : %DokTyp%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+                File.WriteText File: TxtPfad TextToWrite: $'''  Dateiname      : %DokDateiname%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+                SET DokIndex TO DokIndex + 1
+            END
+        END
+        Folder.GetFiles Folder: zielorder_renamed.FullName FileFilter: $'''*.*''' IncludeSubfolders: False FailOnAccessDenied: True SortBy1: Folder.SortBy.NoSort SortDescending1: False Files=> RestFiles
+        LOOP FOREACH restFile IN RestFiles
+            IF NOT (restFile.Extension = $'''.pdf''') AND NOT (restFile.Extension = $'''.PDF''') AND NOT (restFile.Extension = $'''.txt''') AND NOT (restFile.Extension = $'''.TXT''') AND NOT (restFile.Extension = $'''.Pdf''') AND NOT (restFile.Extension = $'''.Txt''') THEN
+                File.Delete Files: restFile
+            END
+        END
+        File.Move Files: CurrentZip Destination: Archiv_Ordner IfFileExists: File.IfExists.Overwrite MovedFiles=> MovedZip
+        SET ZipArchiviert TO True
+        File.RenameFiles.RenameAddText Files: MovedZip TextToAdd: $'''%xml_erstellungszeit_format%_%verfahrensgegenstand_bereinigt%_''' TextPosition: File.AddTextPosition.BeforeName IfFileExists: File.IfExists.Overwrite RenamedFiles=> RenamedFiles
+        DateTime.GetCurrentDateTime.Local DateTimeFormat: DateTime.DateTimeFormat.DateAndTime CurrentDateTime=> EndZeitpunkt
+        Text.ConvertDateTimeToText.FromCustomDateTime DateTime: EndZeitpunkt CustomFormat: $'''yyyy-MM-dd-HH-mm''' Result=> FormattedEndzeit
+        SET LogEintrag TO $'''%FormattedEndzeit% | OK | %xml_erstellungszeit_format% | Empfaenger: %xml_empfaenger% | AZ-Absender: %xml_az_absender% | AZ-Empfaenger: %xml_az_empfaenger% | %verfahrensgegenstand_bereinigt%'''
+        File.WriteText File: LogDatei TextToWrite: LogEintrag AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        LABEL SkipToNext
+        IF (HatFehler = True) THEN
+            DateTime.GetCurrentDateTime.Local DateTimeFormat: DateTime.DateTimeFormat.DateAndTime CurrentDateTime=> FehlerZeitpunkt
+            Text.ConvertDateTimeToText.FromCustomDateTime DateTime: FehlerZeitpunkt CustomFormat: $'''yyyy-MM-dd-HH-mm''' Result=> FehlerZeitpunktFormatiert
+            SET FehlerText TO $'''%FehlerZeitpunktFormatiert% | FEHLER | %CurrentZip%'''
+            File.WriteText File: LogDatei TextToWrite: FehlerText AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+        END
+        IF (ZipArchiviert = False) THEN
+            File.Move Files: CurrentZip Destination: Archiv_Ordner IfFileExists: File.IfExists.Overwrite MovedFiles=> MovedZip
+            File.RenameFiles.RenameAddText Files: MovedZip TextToAdd: $'''FEHLER_%xml_erstellungszeit_format%_''' TextPosition: File.AddTextPosition.BeforeName IfFileExists: File.IfExists.Overwrite RenamedFiles=> RenamedFiles
+        END
+        WAIT 1
+    END
+    WAIT 30
+END
